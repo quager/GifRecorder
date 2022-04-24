@@ -3,9 +3,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Windows.Media.Imaging;
 using Microsoft.Win32;
-using System.Windows.Media;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Drawing;
@@ -29,12 +27,13 @@ namespace GifRecorder
 		private bool _recording;
 		private double _frameHeight;
 		private double _frameWidth;
+		private int _framesCaptured;
 		private int _framesRecorded;
-		private BitmapSource _frame;
 		private string _recordingTime = "00:00";
 		private string _recordedBytes = "0 B";
 		private Stopwatch _timer;
 		private int _settingsColumn = (int)SettingsSide.OnRight;
+		private int _frameRate = Capture.DefaultFrameRate;
 
 		public CornerRadius HeaderCornerRadius => OnLeftSide ? new CornerRadius(5, 0, 0, 0) : new CornerRadius(0, 5, 0, 0);
 		public CornerRadius WindowCornerRadius => OnLeftSide ? new CornerRadius(5, 0, 0, 5) : new CornerRadius(0, 5, 5, 0);
@@ -49,6 +48,16 @@ namespace GifRecorder
 
 				OnPropertyChanged(nameof(WindowCornerRadius));
 				OnPropertyChanged(nameof(HeaderCornerRadius));
+			}
+		}
+
+		public int FrameRate
+		{
+			get => _frameRate;
+			set
+			{
+				if (SetProperty(ref _frameRate, value))
+					_capture.FrameRate = value;
 			}
 		}
 
@@ -94,6 +103,12 @@ namespace GifRecorder
 			set => SetProperty(ref _framesRecorded, value);
 		}
 
+		public int FramesCaptured
+		{
+			get => _framesCaptured;
+			set => SetProperty(ref _framesCaptured, value);
+		}
+
 		public double FrameHeight
 		{
 			get => _frameHeight;
@@ -114,12 +129,6 @@ namespace GifRecorder
 			}
 		}
 
-		public BitmapSource Frame
-		{
-			get => _frame;
-			set => SetProperty(ref _frame, value);
-		}
-
 		public string FilePath
 		{
 			get => _filePath;
@@ -130,6 +139,7 @@ namespace GifRecorder
 
 		public MainWindow()
 		{
+			_filePath = Settings.Default.LastFilePath;
 			_capture = new Capture();
 
 			InitializeComponent();
@@ -138,41 +148,19 @@ namespace GifRecorder
 			_capture.FrameCaptured += OnFrameCaptured;
 		}
 
-		private void OnFrameCaptured(Bitmap bitmap)
+		private void OnFrameRecorded()
 		{
-			BitmapSource frame = CreateBitmapSource(bitmap);
-			frame.Freeze();
-			Frame = frame;
-
-			if (!_recorder.Recording)
-				return;
-
-			FormatConvertedBitmap converted = new FormatConvertedBitmap();
-			converted.BeginInit();
-			converted.Source = frame;
-			converted.DestinationFormat = PixelFormats.Indexed8;
-			converted.DestinationPalette = BitmapPalettes.Halftone256;
-			converted.EndInit();
-
-			_recorder.WriteFrame(converted, _capture.Delay);
 			FramesRecorded = _recorder.RecordedFrames;
 			RecordedBytes = FormatFileSize(_recorder.RecordedBytes);
 		}
 
-		private static BitmapSource CreateBitmapSource(Bitmap bitmap)
+		private void OnFrameCaptured(Bitmap frame)
 		{
-			System.Drawing.Imaging.BitmapData bitmapData = bitmap.LockBits(
-				new Rectangle(0, 0, bitmap.Width, bitmap.Height),
-				System.Drawing.Imaging.ImageLockMode.ReadOnly, bitmap.PixelFormat);
+			if (!Recording)
+				return;
 
-			BitmapSource bitmapSource = BitmapSource.Create(
-				bitmapData.Width, bitmapData.Height,
-				bitmap.HorizontalResolution, bitmap.VerticalResolution,
-				PixelFormats.Bgr32, null,
-				bitmapData.Scan0, bitmapData.Stride * bitmapData.Height, bitmapData.Stride);
-
-			bitmap.UnlockBits(bitmapData);
-			return bitmapSource;
+            _recorder.AddFrame(frame, _capture.Delay);
+			FramesCaptured++;
 		}
 
 		private bool StartRecording()
@@ -185,8 +173,10 @@ namespace GifRecorder
 
 			try
 			{
+				_recorder?.Dispose();
 				_recorder = new Recorder();
 				_recorder.Start(FilePath);
+				_recorder.FrameRecorded += OnFrameRecorded;
 			}
 			catch (IOException)
 			{
@@ -208,12 +198,10 @@ namespace GifRecorder
 			return true;
 		}
 
-		private void StopRecording()
+        private void StopRecording()
 		{
 			_timer.Stop();
 			_capture.Stop();
-			_recorder.Stop();
-			_recorder.Dispose();
 		}
 
 		private static string FormatFileSize(long recordedBytes)
@@ -233,12 +221,19 @@ namespace GifRecorder
 			return $"{recordedBytes} B";
 		}
 
-		private void OnClose(object sender, RoutedEventArgs e) => Close();
+		private void OnClose(object sender, RoutedEventArgs e) =>
+			Close();
+
+		private void OnMinimize(object sender, RoutedEventArgs e) =>
+			WindowState = WindowState.Minimized;
 
 		private void Frame_Closing(object sender, CancelEventArgs e)
 		{
 			if (Recording)
 				StopRecording();
+
+			Settings.Default.LastFilePath = FilePath;
+			Settings.Default.Save();
 		}
 
 		private void Frame_MouseDown(object sender, MouseButtonEventArgs e) => DragMove();

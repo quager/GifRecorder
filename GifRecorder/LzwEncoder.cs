@@ -81,11 +81,11 @@ namespace GifRecorder
 
 			public int GetHashCode([DisallowNull] byte[] obj)
 			{
-				long hash = obj.Length;
+				int hash = obj.Length;
 				foreach (byte item in obj)
 					hash += item.GetHashCode();
 
-				return (int)hash;
+				return hash;
 			}
 		}
 

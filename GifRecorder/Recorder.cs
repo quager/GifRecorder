@@ -1,16 +1,18 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Windows;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using System.Drawing;
+using System.Threading;
+using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace GifRecorder
 {
 	internal class Recorder : IDisposable
 	{
-		private readonly object _locker = new object();
+		private const byte LzwMinCodeSize = 8;
+        private CancellationTokenSource _cancelRecording;
+		private FrameQueue _frameQueue;
 		private FileStream _fileStream;
 		private BinaryWriter _writer;
 
@@ -24,92 +26,98 @@ namespace GifRecorder
 
 		public bool Recording { get; private set; }
 
-		/// <summary>
-		/// Writes Bitmap Data to GIF Image
-		/// </summary>
-		/// <param name="bitmap">Source Bitmap to write</param>
-		/// <param name="delay">Delay Time - If not 0, specifies a delay of 1/100 second to wait before rendering the next frame.</param>
-		/// <param name="transparencyIndex">Transparency Index</param>
-		public void WriteFrame(BitmapSource bitmap, ushort delay = 0, byte transparencyIndex = 0)
-		{
-			lock (_locker)
-			{
-				if (!Recording)
-					return;
+		public QualityLevel ImageQuality { get; set; } = QualityLevel.Normal;
 
-				if (RecordedFrames == 0)
-				{
-					List<byte> colorsData = GetBitmapPalette(bitmap);
-
-					_width = (ushort)bitmap.PixelWidth;
-					_height = (ushort)bitmap.PixelHeight;
-					WriteHeader(_width, _height, 8, colorsData);
-				}
-
-				byte[] bitmapData = GetBitmapData(bitmap);
-				byte[] encodedData = LzwEncoder.Encode(bitmapData, 256);
-				WriteData(encodedData, _width, _height, 8);
-				WriteControlExtension(delay, transparencyIndex);
-				RecordedFrames++;
-				RecordedBytes = _writer.BaseStream.Position;
-			}
-		}
-
-		public void Start(string filePath)
-		{
-			_fileStream = new FileStream(filePath, FileMode.Create);
-			_writer = new BinaryWriter(_fileStream);
-			RecordedFrames = 0;
-			Recording = true;
-		}
-
-		public void Stop()
-		{
-			if (!Recording)
-				return;
-
-			Recording = false;
-			_writer.Write((byte)0x3B); // Trailer
-		}
+		public delegate void OnFrameRecorded();
+		public event OnFrameRecorded FrameRecorded;
 
 		public void Dispose()
 		{
 			if (_disposed)
 				return;
 
+			if (Recording)
+				Stop();
+
 			_writer.Close();
 			_fileStream.Close();
 			_disposed = true;
 		}
 
-		private static byte[] GetBitmapData(BitmapSource bitmap)
+		/// <summary>
+		/// Adds Bitmap Data to the frame queue for writing to a GIF Image
+		/// </summary>
+		/// <param name="frame">Frame to add</param>
+		/// <param name="delay">Delay before frame rendering</param>
+		public void AddFrame(Bitmap frame, ushort delay)
 		{
-			byte[] bitmapData = new byte[bitmap.PixelHeight * bitmap.PixelWidth];
-			int stride = bitmap.PixelWidth + (bitmap.PixelWidth % 4);
-			bitmap.CopyPixels(bitmapData, stride, 0);
+			if (!Recording)
+				return;
 
-			return bitmapData;
+			Frame data = new Frame(frame, delay, ImageQuality);
+			_frameQueue.Push(data);
 		}
 
-		private static List<byte> GetBitmapPalette(BitmapSource bitmap)
+		public async Task WriteFrames()
 		{
-			BitmapPalette palette = bitmap.Palette;
+			await _frameQueue.MoveNextAsync();
 
-			var colorsData = new List<byte>();
-			foreach (Color color in palette.Colors)
+			do
 			{
-				colorsData.Add(color.R);
-				colorsData.Add(color.G);
-				colorsData.Add(color.B);
+				try
+				{
+					Frame frame = _frameQueue.Current;
+					if (!Recording || _cancelRecording.Token.IsCancellationRequested)
+						return;
+
+					if (RecordedFrames == 0)
+					{
+						_width = frame.Width;
+						_height = frame.Height;
+						WriteHeader(_width, _height, 8);
+					}
+
+					byte[] encodedData = LzwEncoder.Encode(frame.Data, 256);
+					WriteData(encodedData, _width, _height, 0, 0, frame.Palette);
+					WriteControlExtension(frame.Delay);
+
+					RecordedFrames++;
+					RecordedBytes = _writer.BaseStream.Position;
+					FrameRecorded();
+				}
+				catch (Exception ex)
+                {
+					Debug.WriteLine(ex.Message);
+                }
 			}
+			while (await _frameQueue.MoveNextAsync());
 
-			while (colorsData.Count < 768)
-				colorsData.Add(0);
-
-			return colorsData;
+			_cancelRecording.Cancel();
+			Recording = false;
+			_writer.Write((byte)0x3B); // Trailer
 		}
 
-		private void WriteHeader(ushort width, ushort height, byte colorResolution, IList<byte> colorTable = null)
+		public void Start(string filePath)
+		{
+			_cancelRecording = new CancellationTokenSource();
+			_frameQueue = new FrameQueue(_cancelRecording.Token);
+			_fileStream = new FileStream(filePath, FileMode.Create);
+			_writer = new BinaryWriter(_fileStream);
+			RecordedFrames = 0;
+			Recording = true;
+			Task.Run(WriteFrames);
+		}
+
+		private void Stop()
+		{
+			if (!Recording)
+				return;
+
+			_cancelRecording.Cancel();
+			Recording = false;
+		}
+
+		private void WriteHeader(ushort width, ushort height, byte colorResolution, byte[] colorTable = null)
 		{
 			byte[] signature = new byte[] { (byte)'G', (byte)'I', (byte)'F' };
 			byte[] version = new byte[] { (byte)'8', (byte)'9', (byte)'a' };
@@ -125,7 +133,7 @@ namespace GifRecorder
 
 			if (colorTable != null)
 			{
-				int length = BinaryHelper.GetBitLength(colorTable.Count / 3 - 1);
+				int length = BinaryHelper.GetBitLength(colorTable.Length / 3 - 1);
 				byte bin = (byte)(length - 1);
 				colorTableField |= bin; // Size of Global Color Table
 				colorTableField |= 128; // Global Color Table Flag
@@ -137,15 +145,15 @@ namespace GifRecorder
 
 			// Global Color Table
 			if (colorTable != null)
-				_writer.Write(colorTable.ToArray());
+				_writer.Write(colorTable);
 		}
 
-		private void WriteData(byte[] data, ushort width, ushort height, byte lzwMinCodeSize, IList<byte> colorTable = null)
+		private void WriteData(byte[] data, ushort width, ushort height, ushort left, ushort top, byte[] colorTable = null)
 		{
 			// Image Descriptor
 			_writer.Write((byte)0x2C); // Image Separator
-			_writer.Write((ushort)0);  // Image Left Position
-			_writer.Write((ushort)0);  // Image Top Position
+			_writer.Write(left);       // Image Left Position
+			_writer.Write(top);        // Image Top Position
 			_writer.Write(width);      // Image Width
 			_writer.Write(height);     // Image Height
 
@@ -158,7 +166,7 @@ namespace GifRecorder
 
 			if (colorTable != null)
 			{
-				int length = BinaryHelper.GetBitLength(colorTable.Count / 3 - 1);
+				int length = BinaryHelper.GetBitLength(colorTable.Length / 3 - 1);
 				byte bin = (byte)(length - 1);
 				colorTableField = bin;  // Size of Local Color Table
 				colorTableField |= 128; // Local Color Table Flag
@@ -171,7 +179,7 @@ namespace GifRecorder
 				_writer.Write(colorTable.ToArray());
 
 			// Image Data
-			_writer.Write(lzwMinCodeSize); // LZW Minimum Code Size
+			_writer.Write(LzwMinCodeSize); // LZW Minimum Code Size
 
 			for (int i = 0; i < data.Length; i += 255)
 			{
@@ -185,17 +193,20 @@ namespace GifRecorder
 			_writer.Write((byte)0); // Block Terminator
 		}
 
-		private void WriteControlExtension(ushort delay, byte transparencyIndex)
+		private void WriteControlExtension(ushort delay, bool useTransparency = false, byte transparencyIndex = 0, bool isBackgroundFrame = false)
 		{
 			_writer.Write((byte)0x21);        // Extension Introducer
 			_writer.Write((byte)0xF9);        // Graphic Control Label
 			_writer.Write((byte)0x04);        // Block Size
 
-			if (transparencyIndex > 0)
-				_writer.Write((byte)0x01);
-			else
-				_writer.Write((byte)0x00);    // [Reserved (3 Bits), Disposal Method (3 Bits), User Input Flag (1 Bit), Transparency Flag (1 Bit)]
+			byte packetFields = 0;
+			if (!isBackgroundFrame)
+				packetFields = 0x12;          // Disposal Method = 3
 
+			if (useTransparency)
+				packetFields |= 1;
+			
+			_writer.Write(packetFields);      // [Reserved (3 Bits), Disposal Method (3 Bits), User Input Flag (1 Bit), Transparency Flag (1 Bit)]
 			_writer.Write(delay);             // Delay Time
 			_writer.Write(transparencyIndex); // Transparency Index
 			_writer.Write((byte)0);           // Block Terminator

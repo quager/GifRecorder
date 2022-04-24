@@ -195,6 +195,50 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <Style x:Key="MinimizeButton" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="Black"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="10 3"/>
+            <Setter Property="Margin" Value="0 3"/>
+            <Setter Property="Width" Value="28"/>
+
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            CornerRadius="4 0 0 4">
+
+                            <Rectangle
+                                Width="12"
+                                Height="3"
+                                Margin="{TemplateBinding Margin}"
+                                Fill="{TemplateBinding Foreground}"
+                                VerticalAlignment="Bottom" HorizontalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="DimGray" />
+                    <Setter Property="Foreground" Value="WhiteSmoke"/>
+                </Trigger>
+
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="Black"/>
+                    <Setter Property="Foreground" Value="WhiteSmoke"/>
+                </Trigger>
+
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="Gray"/>
+                    <Setter Property="Foreground" Value="WhiteSmoke" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Window.Background>
@@ -261,12 +305,14 @@
                         <ColumnDefinition />
                         <ColumnDefinition Width="auto"/>
                         <ColumnDefinition Width="auto"/>
+                        <ColumnDefinition Width="auto"/>
                     </Grid.ColumnDefinitions>
                     
                     <ToggleButton Style="{DynamicResource SideToggle}" IsChecked="{Binding OnLeftSide}"/>
-                    <ToggleButton Grid.Column="2" Style="{DynamicResource RecordToggle}"/>
+                    <Button Grid.Column="2" Style="{DynamicResource MinimizeButton}" Click="OnMinimize"/>
+                    <ToggleButton Grid.Column="3" Style="{DynamicResource RecordToggle}"/>
 
-                    <Button Grid.Column="3" Style="{DynamicResource CloseButton}" Click="OnClose"/>
+                    <Button Grid.Column="4" Style="{DynamicResource CloseButton}" Click="OnClose"/>
                 </Grid>
             </Border>
 
@@ -328,12 +374,16 @@
                 </Grid>
             </Grid>
 
-            <Border Margin="5" Background="Black">
-                <Image                   
-                    Height="200"
-                    Width="280"
-                    Source="{Binding Frame, UpdateSourceTrigger=PropertyChanged}"/>
-            </Border>
+            <Grid Margin="4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Margin="4" Text="Set Frame Rate:" VerticalAlignment="Center"/>
+
+                <TextBox Grid.Column="1" Margin="4" Text="{Binding FrameRate, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"/>
+            </Grid>
 
             <Grid Margin="5 0">
                 <Grid.ColumnDefinitions>
@@ -342,9 +392,10 @@
                     <ColumnDefinition />
                 </Grid.ColumnDefinitions>
 
-                <TextBlock
-                    Margin="0 5"
-                    Text="{Binding Path=FramesRecorded, StringFormat=Frames: {0}}"/>
+                <TextBlock Margin="0 5">
+                    <Run Text="{Binding Path=FramesCaptured, StringFormat=Frames: {0}/}"/>
+                    <Run Text="{Binding Path=FramesRecorded}"/>
+                </TextBlock>
                 
                 <TextBlock
                     Grid.Column="1"
